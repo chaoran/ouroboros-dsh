@@ -2,12 +2,12 @@
 
 > **公开版说明**：本文最初为一个私有工作区所写。公开版已把本地绝对路径、内部包名与运行 ID 替换为占位符，其余内容未改。
 
-> 调研日期 2026-10-22。对象：Q00/ouroboros v0.55.x（696 个 py 文件 /
+> 调研日期 2026-10-22（v2：补生态调查与既有先例）。对象：`~/src/ouroboros`（v0.55.x，696 个 py 文件 /
 > 358,312 行）与一个装配了 `@local/dsh-ouroboros-preset` 的 dsh profile（`web`）。
 > DSH 实现检出：`<dsh-install>/node_modules/@deepseek-ai/`。
 >
 > 本文是**调研与方案**：没有改代码，没有装卸 bundle。所有阈值/字段都以源码为准；
-> 文档与代码冲突处单独列出（附录 B）。
+> 文档与代码冲突处单独列出（附录 B）；给实现者的交接清单在附录 C。
 
 ---
 
@@ -42,7 +42,7 @@
 
 ---
 
-## 1. 现状：DSH 里的 ouroboros 现在是什么形态
+## 1. 现状与生态：DSH 里的 ouroboros，以及它有没有现成的原生替代
 
 ### 1.1 安装形态
 
@@ -71,6 +71,12 @@ shipped `standard` preset，末尾加一行：
 而且 preset 是**eager 装载**的：声明一被 Loader 挂上就 mount 子树，与有没有人选这个模式无关
 （该 preset README 的"三条要知道的行为"第 1 条）。所以代价在 profile 启动时
 就已付出，不用也要付。
+
+**版本兼容性**：这个 bundle 的 `package.json` 不声明 `engines.dsh`，也不声明 dsh peer，因此 dsh 的
+版本门（`engines.dsh` → DSH peer → 都没有则放行）不会拦它；它用到的 mcp-client 字段
+（`serverName`/`transport`/`command`/`args`/`env`/`toolCallTimeoutMs`/`failOnStartupError`）在
+dsh 0.2.1-rc.2 的检出里仍然存在。所以"能装、能起"成立——但上游从未声明针对该版本做过适配，
+而 §1.3 的现场证据说明"能起"与"好用"是两件事。
 
 ### 1.2 成本（标注来源，不把我没测的当测过的）
 
@@ -126,6 +132,71 @@ shipped `standard` preset，末尾加一行：
    （`+ouroboros <skill>` 查询约定）。
 
 ---
+
+### 1.5 生态调查：当前没有现成的 DSH 原生 port（2026-10-22）
+
+写这一节是为了让实现者**不要再去找一遍**。结论：不存在面向当前 dsh 的原生（in-process / TS）
+Ouroboros 移植；上游唯一提供的 DSH 集成就是 §1.1 那个纯配置 MCP bundle。
+
+| 检查面 | 结果 |
+|---|---|
+| 上游 `integrations/` | 只有 `dsh-plugin`（GitHub contents API） |
+| 该包本身 | `dsh-ouroboros@0.1.0`：`files` 只有 `cordis.patch.yml` + `README.md`，无 `main`/`exports`/依赖/`engines` |
+| 立项 issue | [#2159](https://github.com/Q00/ouroboros/issues/2159) 原文："A **config-only** dsh bundle … inserts one `@deepseek-ai/dsh-mcp-client` row spawning `ouroboros mcp serve` over stdio. **No separate repo or release cadence: it has no code of its own.**" |
+| 落地 PR | [#2158](https://github.com/Q00/ouroboros/pull/2158)（bundle）；[#2169](https://github.com/Q00/ouroboros/pull/2169) 加的是 host-driven execution runtime（park + 心跳），仍是子进程协议 |
+| 仓库名变体 | `dshoroboros` / `ooo-dsh` / `dsh-ooo` / `ouroboros-dsh` 在 GitHub 搜索均为 0 命中 |
+| npm | `dsh-ouroboros` / `ouroboros-dsh` / `dsh-plugin-ouroboros` / `dsh-ooo` 全部 404 |
+| 上游 issue/PR 的原生提案 | title 含 `in-process` / `typescript` / `port` 的命中与本主题无关（0 条实质提案） |
+| 社区搬运 | `nnnet/dsh-plugins-collection` 只是把上游 fork 作为 git submodule 挂进去（仍是 Python/MCP） |
+| 生态清单口径 | `awesome-deepseek-harness` 中文 README 写作"纯配置包，经 MCP 挂载 Ouroboros，提供 36 个工具"；插件目录站标"原生运行时"，指的是"在 dsh 聊天里可用"，不是 in-process（其 FAQ 两种口径混用） |
+
+两个直接影响本项目的推论：
+
+1. **本项目不是重复劳动**——补的正是上游明确不做的部分（`#2159`：*no code of its own*）。
+2. **命名避开 `dsh-ouroboros`**：上游已把它用在 MCP bundle 上。本项目仓库名用 `ouroboros-dsh`。
+
+### 1.6 可借鉴的既有原生移植：pirobos / clauroboros
+
+原生移植已经有人做出来了，只是**不是给 DSH 的**：
+
+| 项目 | 宿主 | 形态 | 状态 | 与本项目的关系 |
+|---|---|---|---|---|
+| [`shseooo/pirobos`](https://github.com/shseooo/pirobos) | pi.dev（pi-mono 扩展） | TypeScript，`index.ts` + `src/` | v0.2.1，MIT，48 个文件 ≈ 2k 行；0★；最后推送 2026-05-27；未发 npm | **最接近的先例**，可直接当蓝图 |
+| [`shseooo/clauroboros`](https://github.com/shseooo/clauroboros) | Claude Code | 同作者；`.ouroboros/` 与 pirobos 字节兼容 | 同上量级 | 证明同一份 `.ouroboros/` 状态可跨宿主复用 |
+| [`BrahmanForge/pirobos-ralph-loop-harness`](https://github.com/BrahmanForge/pirobos-ralph-loop-harness) | pi.dev | ralph 变体实验 | 实验性 | 只当参考 |
+| [`police-hotbioy/code-feedback-weave`](https://github.com/police-hotbioy/code-feedback-weave) | 泛 | 反馈闭环实验 | 实验性 | 只当参考 |
+
+pirobos README 第一句：*"This is **not** a wrapper around the `ouroboros` Python CLI. The spec-first
+loop … is implemented directly inside pi as a TypeScript extension."* —— 与 §4 的方案同构。
+
+**七条具体可借鉴的（按价值排序）**：
+
+1. **状态布局**：`.ouroboros/seed.json` 是真身、`seed.yaml` 是只读镜像，finalize 后 lock。
+   与 §4.5 同构，建议**对齐命名**，让同一项目的状态可被 pirobos / clauroboros 复用。
+2. **Stage-1 命令自动识别**：mechanical 自动探测 15+ runner（Node 锁文件感知的包管理器、
+   vitest / jest / playwright / cypress、tox / pytest、rake / make、cargo、go、mix、swift、
+   composer / phpunit、mvn / gradle），只对**上次评测以来的 git diff** 做增量。
+   这直接解决 §1.3 那个"自动生成的 Stage-1 命令指向不存在脚本"的坑——但仍要 fail-closed：
+   探测不到 = `unverified`，不许猜。
+3. **硬门**：没有锁定 Seed 时对 `edit`/`write` 直接 `{block: true}`。DSH 的等价物是
+   `ctx.tools.guard` 的 pre-execute 守卫，比"提示词里写批准门"硬得多，建议 P1 就做。
+4. **ralph 硬上限默认 8 轮**（上游是 30 代）。对按 token 计费的用户更友好，原生版建议取 8–10 且可配。
+5. **逐 AC 评分 + 文件级证据**（`ooo_grade_ac`）：与 §2.3 "每 AC 独立权威"一致，可作为 Stage-2 的输入组织方式。
+6. **`plan.json` + plan tick**：Seed 锁定后把 AC 展开成执行计划。本方案没有这一层——建议作为
+   **P2 可选项**：它只是 AC 的展示视图，**不要**当账本。
+7. **drift 是独立命令、只做展示**：与 §2.4 "drift 仅遥测、不参与收敛"完全一致，印证我们的取舍。
+
+**规模标定**：pirobos 用 ≈2k 行 TS 覆盖 interview / seed / evaluate / drift / unstuck / ralph 全环。
+本方案估 5–12k 行，差额来自三项额外要求：Stage-3 共识与独立性过滤、lineage/rewind/完整收敛信号集、
+事件溯源账本。所以 §5 的估计**偏保守**而非乐观。
+
+**不要做的事**：
+
+- **不要把它当依赖**：0★、单人、5 月后未更新、未发 npm、只有 2 个测试文件。当蓝图可以，当依赖不行。
+- **不要搬"人格化"提示**：pirobos 会把一份 `KARPATHY_HARNESS` 常量注入系统提示（仅在 Seed 锁定后）。
+  本方案不需要——纪律由 5 个技能承载，系统提示只留一小段路由说明（§3）。
+- **不要抄它的宿主钩子写法**：那是 pi 的扩展 API（`tool_call` / `before_agent_start`）；DSH 对应
+  `ctx.tools.guard` / `ctx.systemPrompt.section` / `ctx.subagents`。
 
 ## 2. Ouroboros 的核心能力（逐条对照源码）
 
@@ -492,6 +563,9 @@ ooo_evolve（可选）─► wonder/reflect → Gen N+1 … 相似度 ≥0.95 �
 - **复用 Auto review 的纪律**：只读评审信封（`max_turns`、无执行/写权限）在 DSH 里可以用
   per-child 的工具限制 + 权限模式实现，不必自建策略引擎。
 - **别把 todo 当账本**：todo 是模型可改的展示态；账本必须 append-only 且由代码写。
+- **借鉴 pirobos 的四处**（§1.6）：`.ouroboros/` 命名对齐；Stage-1 runner 自动探测（fail-closed）；
+  无 Seed 时用 `ctx.tools.guard` 硬拦写操作；evolve/ralph 轮数上限取 8–10。
+- **plan 视图不进账本**：pirobos 的 `plan.json` 只做 AC 的执行视图（P2 可选）。
 
 ---
 
@@ -511,6 +585,10 @@ ooo_evolve（可选）─► wonder/reflect → Gen N+1 … 相似度 ≥0.95 �
 | **合计** | **33,601（9.4%）** | **约 5–7k（最小可信）/ 8–12k（对等）** | 上限 16.4% 是整包口径 |
 
 估时（单人，含验证）：P0 3–4 天，P1 5–7 天，P2 7–10 天，P3 2 天，合计约 3–4 周。
+
+> **校准**：pirobos（§1.6）用 ≈2k 行 TS 覆盖了 interview→seed→evaluate→drift→ralph 全环，
+> 但没有 Stage-3 共识、没有 lineage/rewind、没有事件溯源账本——本文这三项额外要求正是差额来源。
+> 若只做 P0+P1（§7 的方案 B），落在 2–4k 行是现实的。
 
 ---
 
@@ -652,3 +730,61 @@ type Verdict = { acceptance_state: 'approved'|'rejected'|'unverified'
 | `satisfaction_threshold` | 配置项存在 | 硬编码 0.8，字段惰性 | **0.8** |
 | drift 阈值 | status skill 里 0.15/0.30 | 触发矩阵用 `drift > 0.3`；循环里 drift 仅遥测 | **代码 + 只做展示** |
 | 宿主客户端闸门 | skill 里是硬门 | `REQUIRED_CLIENT_GATES` 默认 warn-only，需 env 才阻断 | **原生版取阻断**（差异记录在案） |
+
+## 附录 C：实现者交接清单
+
+在新工作区里读这份文档开工时，按 C.1→C.5 走；每一条都对应正文里某个已踩过的坑。
+
+### C.1 动手前
+
+1. **不要去找现成的 DSH 原生 port**（§1.5），也不要复用 MCP bundle 的任何代码路径。
+2. 用 `cordis_inspect_query`（host `Service`）取一次精确契约：`llm`、`tools`、`skills`、`subagents`、
+   `workflowEngine`、`userQuestions`、`subprocess`、`fs`、`systemPrompt`、`commands`。
+   §3 的证据是 0.2.1-rc.2 时点的；rc 之间会变（委派已从 fork/spawn 改成 managed activation）。
+3. 读每个 `@deepseek-ai/dsh-<pkg>/README.md` 的 **Model Experience** 一节：它写明这个包会让模型
+   看到什么，决定你的工具/技能是否需要额外提示。
+
+### C.2 不要做的事
+
+| 不要 | 原因 |
+|---|---|
+| 接 MCP / 起 Python 子进程 | 正是本项目要消除的东西（§1.4） |
+| 引 litellm 或自带 API key | LLM 必须走 `ctx.llm`，否则绕过 harness 的模型选择、计量、重试（§1.3 的空响应就是这么丢的） |
+| 写 `~/.ouroboros/ouroboros.db` | 账本落 workspace 的 `.ouroboros/`，否则不可 review、不随仓库走（§4.5） |
+| 用 DSH session log 当账本 | 第三方插件不能写 `plugin:` 记录（`dsh-session` README） |
+| 让子代理去问用户 | 子代理开人对人交互会报错；访谈只能在主会话（§3） |
+| 从 `package.json` 猜 Stage-1 命令 | 实测踩过：猜出来的命令指向仓库里不存在的脚本（§1.3）；只从 `mechanical.toml` 取，探测不到就 `unverified` |
+| 让模型决定"是否批准" | 只有 Stage-1 执行证据能授予批准，模型层只能扣留（§2.3） |
+| 把 todo / plan 当账本 | 它们是可改的展示态；账本 append-only 且由代码写（§4.6） |
+| 依赖 `ctx.llm` 的结构化输出 | `GenerateOptions` 只有 `temperature/maxTokens/stop`，没有 `response_format`；要手写解析 + 重试 + fail-closed（§3） |
+
+### C.3 必须先写的确定性模块
+
+`core/seed.js`（含 `semantic_ac_key`）、`core/ambiguity.js`（公式 + 四维下限 + streak + 0.21 钉子）、
+`core/gate.js`（approved/rejected/unverified + `failure_reason` 优先级）、`core/stage1.js`
+（argv 白名单 + `executed` 语义）、`core/converge.js` + `core/focus.js`、`core/ledger.js`。
+
+先让这六个模块的单测全绿，再接工具与技能——顺序反过来会把不确定性混进内核。
+
+### C.4 回读锚点（改任何数值前先读源码）
+
+| 要改什么 | 读哪里 |
+|---|---|
+| Seed 字段 / AC 成功契约 | `core/seed.py:768-870`、`:530-563`、`:730-753` |
+| 歧义公式 / 阈值 / 四维下限 | `bigbang/ambiguity.py:42-59`、`:296`、`:836-852` |
+| 下一问与 closure 切换 | `bigbang/turn_planner.py:122-165`、`interview.py:1557-1573` |
+| Seed 生成前的九道门 | `authoring_handlers.py:119-125, 1256-1320`、`core/seed_verify_gate.py:47-61` |
+| 验收裁决 | `evaluation/models.py:34-40, 566-603` |
+| 触发矩阵 / 计票 | `evaluation/trigger.py:31-37`、`consensus.py:399-405, 530-532` |
+| Stage-1 执行细节 | `evaluation/mechanical.py:322-329, 357`、`languages.py:191-217, 229-306` |
+| 收敛顺序 | `evolution/convergence.py:70-133, 394-410` |
+| 相似度 / focus / rewind | `core/lineage.py:389-407`、`evolution/focus.py:193-282`、`loop.py:2027-2098` |
+| 账本 schema / 重放 | `persistence/schema.py:42-227`、`event_store.py:1684-1721` |
+
+### C.5 已经定下、不必再讨论的选择
+
+- 6 个工具 / 5 个技能，工具名 `ooo_*`（§4.2）。
+- 状态在项目内 `.ouroboros/`（§4.5）。
+- 宿主侧审批门默认**阻断**（上游默认 warn-only，这是刻意的差异，见附录 B）。
+- `min_generations` 取 3；停滞非终态；drift 不闸门（附录 B）。
+- 非目标：PM 访谈 / brownfield / publish / maintain / TUI / dashboard / 14 个宿主 adapter（§0）。
