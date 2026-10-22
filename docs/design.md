@@ -3,7 +3,7 @@
 > **公开版说明**：本文最初为一个私有工作区所写。公开版已把本地绝对路径、内部包名与运行 ID 替换为占位符，其余内容未改。
 
 > 调研日期 2026-10-22。对象：Q00/ouroboros v0.55.x（696 个 py 文件 /
-> 358,312 行）与当前装入 profile `web` 的 `@local/dsh-ouroboros-preset`。
+> 358,312 行）与一个装配了 `@local/dsh-ouroboros-preset` 的 dsh profile（`web`）。
 > DSH 实现检出：`<dsh-install>/node_modules/@deepseek-ai/`。
 >
 > 本文是**调研与方案**：没有改代码，没有装卸 bundle。所有阈值/字段都以源码为准；
