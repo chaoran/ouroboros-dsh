@@ -628,6 +628,52 @@ ooo_evolve（可选）─► wonder/reflect → Gen N+1 … 相似度 ≥0.95 �
 `minimal` 没有）。缺 `tool-skill` 时模型仍能按工具描述直接调用 `ooo_*`，但技能里的流程纪律
 （批准门、账本可见、footer）拿不到——所以 6 个工具的 description 必须自带足够上下文，不能假定技能一定被加载。
 
+### 4.8 暴露面：能不能只挂一个 skill、工具默认不出现
+
+能，而且这是比 §4.7 的 A 形态更好的默认。代价对比（数字是估计，按 description 长度浮动）：
+
+| 形态 | 每个请求固定成本 | 首次使用前是否可见 | 工具契约 / UI 卡片 | 硬闸门 |
+|---|---|---|---|---|
+| A. host 层常驻 6 工具（§4.7） | 6 个 schema ≈ **1.5–2.4k token** | 可见 | 有（类型化参数 + `ask_user` 卡片） | 有 |
+| T0. 只有 skill + 脚本 | 1 条目录项 ≈ **100–200 token，且是 durable 消息（只付一次）** | 不可见 | 无（argv 传参） | 有（`ctx.tools.guard`，不需要注册工具） |
+| **T1. skill 门面 + 工具懒注册（推荐）** | 同 T0；**加载 skill 之后**才出现 6 个 schema | **不可见** | 有 | 有 |
+| T2. 单个 dispatcher 工具 | 1 个 schema ≈ 250–350 token | 可见 | 有（`action` 枚举） | 有 |
+| T3. preset 限定（§4.7 B） | 0（其他模式）/ 同 A（该模式） | 不可见 | 有 | 有 |
+
+**T1 的机制（都是 DSH 现有能力，不是自造）**：
+
+1. **只注册 skill，不注册工具**：`ctx.skills.registerProvider({ list, get })`——官方 `@deepseek-ai/dsh-skill-badge`
+   就是"只加一个 skill、不加任何模型工具"的现成样例。skill 的 `invocation` 取
+   `{ modelInvocable: true, userInvocable: true }`，于是模型能通过目录发现它、用户也能直接打 `/ooo 我想做一个 X`
+   把指令注入当步。
+2. **目录是 durable 消息**：`dsh-tool-skill` 在首个请求前发**一条** user-role 目录消息（名字 + 截断到
+   `catalogDescriptionMaxLength` 的描述，默认上限 500 字符），只在条目摘要变化时整条替换。所以它只付一次，
+   并且进 KV cache——这正是"只暴露一个 skill"的成本下限。
+3. **工具按需出现**：在 provider 的 `get(name)` 里（即 skill 被加载的那一刻）调用 `ctx.tools.register(...)`
+   注册 6 个工具。会话中途新增工具是 DSH 的一等路径：agent loop 每个 step 比对
+   `request/header` 里记录的 active tools，**为新增/移除各发一条 `developer/message`**；支持
+   `toolUpdate` 的路由还能"激活新增工具而不重写历史消息"。MCP 客户端就是这么做的
+   （`discovery → registration swap` 的原子换代），所以我不是在赌一个未实现的机制。
+4. **硬闸门另算**：`ctx.tools.guard()` 是全局（或按 agent）的单调守卫，返回字符串即拒绝，
+   且不需要注册任何工具。用它实现 pirobos 那条"没有锁定 Seed 就拒绝 `write`/`edit`"（§1.6 第 3 条），
+   拒绝理由是"先加载 skill `ooo` 并完成访谈"——这同时解决了"模型可能不去加载 skill"的软肋。
+
+**必须知道的两个限制（写进设计与验收，不要藏）**：
+
+- **注册不是按会话的**：`ctx.tools.register` 落在插件作用域（host 层），所以**同一 dsh 进程里第一次有人用过 ooo
+  之后，之后新建的会话也会看到这 6 个工具**（它们已经全局注册了）。已有的会话在下一个 step 会收到
+  "工具新增"的 developer 消息。也就是说 T1 的省法是"首次使用前零成本"，不是"永远零成本"。
+  要真正按会话隔离只有 T3（preset 限定），或每次用完 dispose（会让工具反复增删、历史反复失效，不建议）。
+- **会付一次 KV cache 失效**：新增工具改变了请求的工具声明，从该 token 起前缀复用失效一次。一次性的，可接受。
+
+**结论**：v1 默认 **T1**；若某条路由不支持 `toolUpdate`（会在该 step 触发一次 prompt 重整），
+降级成 T2（单 dispatcher 工具，始终可见）比降级成 A 更划算。T0 只在"连 6 个 schema 都不想要"时考虑，
+它是唯一能让"用过之后也不常驻工具"的形态，代价是把每次调用变成 argv。
+
+**可验证的验收（P0 增补第 7 条）**：新建一个会话、不提 ooo，读该会话日志里最新一条 `request/header`
+的 tools 列表——**不含任何 `ooo_*`**；然后在同一会话里 `/ooo` 或让模型加载 skill `ooo`，
+下一 step 的 `request/header` 出现 6 个 `ooo_*` 且日志里有一条工具新增的 `developer/message`。
+
 ---
 
 ## 5. 工作量
@@ -859,3 +905,13 @@ type Verdict = { acceptance_state: 'approved'|'rejected'|'unverified'
   preset 形态，不必处理 realm 隔离。
 - 6 个工具的 `description` 必须自带触发条件与下一步提示（技能可能没被加载，见 §4.7 副作用）。
 - 安装后按 §4.7 第 2 条验证，并按 §6 P0 的六条做行为验收。
+
+### C.7 暴露面自检（对应 §4.8）
+
+- 默认形态：**只注册 1 个 skill，不注册工具**；工具在 skill 的 `get()` 里懒注册。
+- skill 的 `invocation` 要同时打开 `modelInvocable` 与 `userInvocable`（否则 `/ooo` 用不了）。
+- skill 的 `description` 是这个项目唯一常驻的"广告位"：必须含触发词（ooo / 规格优先 / 访谈 / Seed / 评测 / 演化）
+  与一句"先加载我，再动手"，长度控制在 200 字以内（目录上限 500）。
+- 另外用 `ctx.tools.guard()` 实现"没有锁定 Seed 就拒绝写文件"，拒绝理由指向本 skill 的名称——
+  它不增加任何模型可见的工具，却是唯一能强制模型走流程的东西。
+- 验收按 §4.8 最后那段：未使用会话的 `request/header` 不含 `ooo_*`；加载后出现 6 个且伴随一条新增工具消息。

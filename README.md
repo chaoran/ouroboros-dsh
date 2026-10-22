@@ -39,6 +39,11 @@ composer, no process. The plugin consumes host services (`ctx.llm`, `ctx.subagen
 the project's `.ouroboros/` directory. A preset-scoped variant is possible but documented as the
 non-default option (see §4.7 of the design).
 
+Exposure is **one skill by default**. Only the skill catalog line is resident; the six `ooo_*` tools are
+registered when the skill is first loaded, so a session that never touches ooo carries no tool schemas.
+A permanent `ctx.tools.guard` blocks writes until a Seed is locked — that is the part a prompt cannot
+enforce, and it costs no model-visible tool. Details and the measured trade-offs are in §4.8.
+
 Package identity, deliberately distinct from the upstream MCP bundle: repository `ouroboros-dsh`,
 bundle `@local/ouroboros-dsh`, Loader row id `ouroboros`. Upstream's `dsh-ouroboros` name stays
 reserved for its config-only MCP bundle.
