@@ -11,7 +11,7 @@
 ## 1. 目标与非目标
 
 **目标**：在 DeepSeek Harness 里跑通 spec-first 工作流（访谈 → Seed → 执行 → 评测 → 演化）：
-LLM 走 `ctx.llm`，执行走 `ctx.subagents` / `ctx.workflowEngine`，状态落项目内 `.ouroboros/`。
+LLM 走 `ctx.llm`，执行走 `ctx.subagents`（Stage-1 命令另走 `ctx.sandbox` + `ctx.subprocess`），状态落项目内 `.ouroboros/`。
 
 **非目标**：PM 访谈、brownfield 仓库注册、`publish` / `maintain` 技能、TUI、dashboard、
 多宿主适配层、MCP 传输、自带 LLM 后端与凭据、`~/.ouroboros/` 里的任何数据。
@@ -129,8 +129,8 @@ ooo_seed ──► 九道门 → restate + 显式批准（plan-review intent）�
 ooo_run ──► 每条 AC 派一个子代理（worker prompt 不含 verify_command / output_assertion）
    ▼  .ouroboros/runs/<run_id>/artifacts/
 ooo_evaluate ──► Stage1：ctx.subprocess 跑 mechanical.toml 的命令（无 shell）
-              ──► Stage2：新子代理（只读工具）看「声明的成功契约 + 执行证据」给结构化 JSON
-              ──► 触发矩阵 → Stage3：3 个独立子代理投票
+              ──► Stage2：`ctx.llm` 纯调用（不派子代理、不执行进程）看「声明的成功契约 + 执行证据」给结构化 JSON
+              ──► 触发矩阵 → Stage3：3 次独立 `ctx.llm` 调用投票
               ──► core/gate：approved | rejected | unverified
    ▼
 ooo_evolve（可选）──► wonder/reflect → 新 Seed → run → evaluate，按 §7 收敛判据停止
@@ -232,10 +232,10 @@ ooo_evolve（可选）──► wonder/reflect → 新 Seed → run → evaluate
 | 工具 | 用途 | 参数 | 返回（要点） | 副作用 | 依赖 |
 |---|---|---|---|---|---|
 | `ooo_interview` | 一轮访谈：记答案 → 确定性打分 → 生成下一问 → 收用户答复 | `goal?`、`session_id?`、`answer?` | `{ question, options[], ambiguity, floors{...}, milestone, ready, ledger_lines, next_action }` | 追加账本；必要时 `seed.lock.json` 不动 | `ctx.llm`、`ctx.userQuestions`（**必须主会话**） |
-| `ooo_seed` | 九道门 → restate + 批准 → 校验 → 锁 Seed | `session_id`、`force?` | `{ seed_id, path, gates[], forced, quality_notes[] }` | 写 `seeds/`、`seed.lock.json` | `ctx.llm`、`ctx.userQuestions`、子代理（closure 审计，只读） |
+| `ooo_seed` | 九道门 → restate + 批准 → 校验 → 锁 Seed | `session_id`、`force?` | `{ seed_id, path, gates[], forced, quality_notes[] }` | 写 `seeds/`、`seed.lock.json` | `ctx.llm`（含 closure 审计，纯调用）、`ctx.userQuestions` |
 | `ooo_run` | 按 AC 派执行子代理，收集产物 | `seed_id`、`max_parallel?` | `{ run_id, acs[], artifacts[], children[] }` | 写 `runs/<id>/` | `ctx.subagents` / `ctx.workflowEngine` |
 | `ooo_evaluate` | 三阶段评测 + 确定性裁决 | `seed_id`、`run_id?` | `{ acceptance_state, failure_reason, stage1, stage2?, stage3?, sandbox }` | 写 `runs/<id>/{stage1,stage2,stage3,verdict}.json` | `ctx.sandbox` + `ctx.subprocess`（Stage1）、`ctx.llm`（Stage2/3 纯调用，**不派子代理**） |
-| `ooo_evolve` | 一代或到收敛的演化循环 | `lineage_id?`、`seed_id`、`max_generations?`（默认 8，上限 30） | `{ lineage_id, generations, converged, similarity, stop_reason }` | 写 `lineage/<id>.jsonl`、`runs/` | `ctx.workflowEngine`（固定脚本）、`ctx.llm`、子代理 |
+| `ooo_evolve` | 一代或到收敛的演化循环 | `lineage_id?`、`seed_id`、`max_generations?`（默认 8，上限 30） | `{ lineage_id, generations, converged, similarity, stop_reason }` | 写 `lineage/<id>.jsonl`、`runs/` | `ctx.llm`、`ctx.subagents`（循环编排在插件代码里；workflow 脚本只暴露 `agent/parallel/pipeline/phase/log`，回调不到本插件自己的 `ooo_run`/`ooo_evaluate`，故**不用** `ctx.workflowEngine`） |
 | `ooo_status` | 只读汇总：阶段/歧义/代数/最近裁决 | `cwd?` | `{ phase, ambiguity, locked, generations, last_verdict, footer }` | 无 | — |
 
 **隔离**：只有两类执行需要沙箱——Stage-1 的命令（本插件自己 spawn）与 `ooo_run` 的执行子代理（继承会话策略）。
@@ -281,7 +281,7 @@ ooo_evolve（可选）──► wonder/reflect → 新 Seed → run → evaluate
 | 验收裁决 | 有 Stage1 执行证据 ∧ 模型层无扣留 → `approved`；无执行证据 → `unverified`；否则 `rejected` | 模型层只能扣留 |
 | Stage1 命令集 | lint / build / test / static / coverage，来自 `.ouroboros/mechanical.toml` | 无 shell、白名单可执行、默认超时 300s；未配置 = 不算证据 |
 | 覆盖率阈值 | 0.7 | 仅当 coverage 配了命令时判 |
-| 相似度 | `0.5×名称重合 + 0.3×类型匹配 + 0.2×完全一致`，分母均为 `|旧 ∪ 新|` | 演化收敛用 |
+| 相似度 | 比较对象 = `ontology_schema.fields`（v1 只比它，不含 AC 文本）；`0.5×名称重合 + 0.3×类型匹配 + 0.2×完全一致`，分母均为 `|旧 ∪ 新|` | 演化收敛用 |
 | 收敛 | 相似度 ≥0.95 且全部 block gate 清空 | block：有评测且 approved、Seed 级 AC 覆盖、每 AC 权威、`score<0.7`、无回归、validation 通过 |
 | 提前收敛 | outcome gate 通过即可在 `min_generations` 之前收敛 | 第 1 代就正确也能停 |
 | 停滞 | 相似度 ≥0.95 连续 3 代 | 非终态，lineage 保留 |
