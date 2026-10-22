@@ -55,7 +55,7 @@ LLM 走 `ctx.llm`，执行走 `ctx.subagents`（Stage-1 命令另走 `ctx.sandbo
 - 守卫逻辑（同步、只读两个小文件）：工具名属于写文件类（`write` / `edit` / `str_replace_editor`）
   且目标落在会话工作区内时，读 `<cwd>/.ouroboros/seed.lock.json`：
   - 不存在 → 拒绝，理由固定为：`先加载技能 ooo 并完成访谈、锁定 Seed；当前项目没有已锁定的 Seed。`
-  - 存在但锁里的 `sha256` 与 `seeds/<seed_id>.json` 的正文哈希不一致 → 拒绝，理由固定为：
+  - 存在但锁里的 `sha256` 与 `seeds/<seed_id>.json` 的**文件字节**哈希不一致 → 拒绝，理由固定为：
     `锁与 Seed 不一致，先修复 .ouroboros/ 再写。`
   - **守卫不读 `kind`**：不存在"演化豁免"分支。锁是权威指针，授权来源写在锁里供审计，不参与放行判断。
 - 守卫只能拒绝、不能授予；`bash` 内的写入不在守卫范围（已知缺口，见 §11）。
@@ -230,7 +230,7 @@ ooo_evolve（可选）──► wonder/reflect → 新 Seed → run → evaluate
 **`seed.lock.json` 的唯一职责**：声明"当前哪份 Seed 是权威的、凭什么"。
 
 ```jsonc
-{ "seed_id": "seed_…", "sha256": "<seeds/<id>.json 正文哈希>",
+{ "seed_id": "seed_…", "sha256": "<seeds/<id>.json 文件字节的 sha256，不是重新序列化的哈希>",
   "kind": "human | evolution",           // 谁授权的
   "approved_by": "explicit | evolution", // 怎么授权的
   "lineage_id": "…|null", "generation": 0, "parent_seed_id": "…|null", "at": "ISO8601" }
