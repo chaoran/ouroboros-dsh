@@ -31,6 +31,18 @@ deletes the part dsh already provides (host adapters, TUI, dashboard, job/fan-ou
 
 No extra process, no credentials of its own, no second ledger.
 
+## Install shape
+
+One **host-level bundle** row in the profile patch — no new agent preset, nothing to pick in the
+composer, no process. The plugin consumes host services (`ctx.llm`, `ctx.subagents`, `ctx.subprocess`,
+`ctx.fs`, `ctx.userQuestions`) and contributes profile-wide tools plus five skills; all state lives in
+the project's `.ouroboros/` directory. A preset-scoped variant is possible but documented as the
+non-default option (see §4.7 of the design).
+
+Package identity, deliberately distinct from the upstream MCP bundle: repository `ouroboros-dsh`,
+bundle `@local/ouroboros-dsh`, Loader row id `ouroboros`. Upstream's `dsh-ouroboros` name stays
+reserved for its config-only MCP bundle.
+
 ## Read the design
 
 - [docs/design.md](docs/design.md) — the full study (Chinese): current-state diagnosis with

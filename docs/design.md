@@ -36,7 +36,7 @@
 "操作系统"当 MCP 插件塞进另一个操作系统，于是同时存在双 LLM 通道、双账本、双委派协议、
 36 个工具的全量注入，以及被迫写进工作区的胶水（一次实测里，工作区就多出了 `.ouroboros/wait_fanout.py`）。
 
-**建议**：原生 host-only bundle `@local/dsh-ouroboros`（纯 ESM，无构建步骤），
+**建议**：原生 host-only bundle `@local/ouroboros-dsh`（纯 ESM，无构建步骤），
 6 个工具 + 5 个嵌入技能 + 一个确定性内核；分 4 期，P0（访谈在进程内跑通、不再起 python）
 3–4 天可交付。
 
@@ -46,7 +46,8 @@
 
 ### 1.1 安装形态
 
-`<profile>/node_modules/@local/dsh-ouroboros-preset/cordis.patch.yml` 插入一条
+`<profile>/node_modules/@local/dsh-ouroboros-preset/cordis.patch.yml`（**旧 MCP 方案的 preset 载体**，
+与本项目 `ouroboros-dsh` 只差词序，注意别混；P3 会被卸载）插入一条
 `@deepseek-ai/dsh-agent-preset`（preset `ouroboros`，`order: 5`），plugins 前半段照搬
 shipped `standard` preset，末尾加一行：
 
@@ -153,7 +154,9 @@ Ouroboros 移植；上游唯一提供的 DSH 集成就是 §1.1 那个纯配置 
 两个直接影响本项目的推论：
 
 1. **本项目不是重复劳动**——补的正是上游明确不做的部分（`#2159`：*no code of its own*）。
-2. **命名避开 `dsh-ouroboros`**：上游已把它用在 MCP bundle 上。本项目仓库名用 `ouroboros-dsh`。
+2. **命名避开 `dsh-ouroboros`**：上游已把它用在 MCP bundle 上；本机另有一个
+   `@local/dsh-ouroboros-preset`（旧 MCP 方案的 preset 载体），也只差词序。本项目统一用
+   `ouroboros-dsh`：仓库名 `ouroboros-dsh`、bundle 包名 `@local/ouroboros-dsh`、Loader 行 id `ouroboros`。
 
 ### 1.6 可借鉴的既有原生移植：pirobos / clauroboros
 
@@ -468,10 +471,10 @@ DB 路径解析：显式参数 → `config.yaml` 的 `persistence.database_path`
 host-only bundle，纯 ESM，无构建、无外部依赖：
 
 ```
-dsh-ouroboros/
+ouroboros-dsh/
 ├── package.json        # type:module, exports {".":"./index.js","./locale/*.json","./icon"},
 │                       # dsh.bundle.patch: ./cordis.patch.yml
-├── cordis.patch.yml    # 一行：id: ouroboros, name: '@local/dsh-ouroboros'
+├── cordis.patch.yml    # 一行：id: ouroboros, name: '@local/ouroboros-dsh'
 ├── index.js            # export function apply(ctx, config) + export const inject=[…]
 ├── core/               # 确定性内核，纯函数，全部单测
 │   ├── seed.js         # 校验/解析/序列化/semantic_ac_key（sha256 前 16）
@@ -567,6 +570,64 @@ ooo_evolve（可选）─► wonder/reflect → Gen N+1 … 相似度 ≥0.95 �
   无 Seed 时用 `ctx.tools.guard` 硬拦写操作；evolve/ralph 轮数上限取 8–10。
 - **plan 视图不进账本**：pirobos 的 `plan.json` 只做 AC 的执行视图（P2 可选）。
 
+### 4.7 安装形态与使用方式（会不会多出一个 preset）
+
+**结论：默认不新建 preset，也不改现有 preset 名册。** 交付物是一个 **host-level bundle**
+（落在 profile 的 `cordis.patch.yml` 层，一行），目录与 §4.1 同构。
+
+依据是 DSH 自己的分层规则：host 插件提供共享服务（工具与提示注册表、agent loop、会话、持久化、
+沙箱、模型路由、子代理后端）；preset 插件只向这些注册表**贡献作用域内的工具 / persona / 提示小节 / 策略**，
+而且 preset 是 eager 装载、按选择它的会话共享。本项目消费的全是 host 服务
+（`ctx.llm` / `ctx.subagents` / `ctx.subprocess` / `ctx.fs` / `ctx.userQuestions`），提供的是 profile 级的
+工具与技能目录，所以属于前者。
+
+| 形态 | 谁看得见 | 每次新建会话要选模式吗 | 启动成本 | 维护成本 |
+|---|---|---|---|---|
+| **A. host-level bundle（推荐）** | 该 profile 的所有会话 | 不用 | 0（进程内 JS，无子进程） | 一行 patch |
+| B. agent preset（现状 MCP 方案的做法） | 只有选了「Ouroboros」的会话 | **要** | preset eager mount | 还要维护一份照搬 `standard` 的 plugins 清单 |
+| C. 两者都装 | — | 看情况 | 双份装载 | 两套清单会漂移 |
+
+**为什么现状是 B、原生版建议 A**：MCP 子进程的代价在 profile 启动时就要付出（§1.1），塞进 preset
+至少能让不用它的人少拿 36 个工具；原生版没有进程成本，固定成本只有 6 个工具 schema 加一段短提示，
+放 host 层更简单，也不会把「Ouroboros」变成一个必须记得去选的模式。
+
+**如果仍然想要模式隔离**（只有显式选中 Ouroboros 的会话才有 `ooo_*`），把同一行放进 preset 的
+`plugins` 列表即可；此时**不要**在插件里提供 `ctx.ouroboros` 服务（状态放 `.ouroboros/` 文件，
+做成无状态插件），否则要把提供者与消费者一起 `isolate` 到同一 realm：
+
+```yaml
+- insert:
+    - id: preset-ouroboros
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: ouroboros
+        name: Ouroboros
+        order: 5
+        plugins:
+          # …照搬 standard 的 plugins 清单…
+          - id: ouroboros
+            name: '@local/ouroboros-dsh'
+```
+
+**装 / 验 / 用 / 卸**：
+
+1. **装**（本地开发）：`plugin_manager` `action: install_bundle`，`target` = bundle 的绝对路径；
+   发布后则是 `dsh plugin --profile web add ouroboros-dsh`。
+2. **验**：`plugin_manager list_plugins` 出现 `ouroboros` 行；`cordis_inspect_query` 的
+   `Config.listConfigs`（`name: '@local/ouroboros-dsh'`）能取到它的 config schema；
+   新会话的工具清单里出现 `ooo_interview` 等 6 个。
+3. **用**：对话框里 `ooo interview 我想做一个 X` 即可（技能 `ooo` 负责路由）；也可以直接点名
+   `ooo seed` / `ooo run` / `ooo evaluate` / `ooo evolve` / `ooo status`。
+   不看聊天也能查：`.ouroboros/ledger.jsonl`、`.ouroboros/seeds/`、`.ouroboros/runs/<id>/verdict.json`。
+4. **卸**：`plugin_manager` `action: remove_bundle`，`target: '@local/ouroboros-dsh'`；
+   要回到 MCP 方案就重装 `@local/dsh-ouroboros-preset`。
+5. **并存**：工具名不冲突（`ooo_*` vs `mcp__ouroboros__*`），但**不建议**——两套账本会分叉（§1.5）。
+6. **每次新建会话要做什么**：A 形态下**什么都不用做**；只有 B 形态才需要选「Ouroboros」模式。
+
+**一个副作用**：host 层注册的技能只有在会话挂了 `tool-skill` 时才可被发现（`standard` / `ptc` 有，
+`minimal` 没有）。缺 `tool-skill` 时模型仍能按工具描述直接调用 `ooo_*`，但技能里的流程纪律
+（批准门、账本可见、footer）拿不到——所以 6 个工具的 description 必须自带足够上下文，不能假定技能一定被加载。
+
 ---
 
 ## 5. 工作量
@@ -643,7 +704,7 @@ ooo_evolve（可选）─► wonder/reflect → Gen N+1 … 相似度 ≥0.95 �
 
 ### P3 — 收尾（2 天）
 
-1. 卸载 `@local/dsh-ouroboros-preset`；归档/删除仓库里的 `.ouroboros/` 胶水文件。
+1. 卸载 `@local/dsh-ouroboros-preset`（旧 MCP 方案）；归档/删除仓库里的 `.ouroboros/` 胶水文件。
 2. 只读兼容旧 seed（真实项目里的 `.ouroboros/seeds/*.yaml` 与上游仓库内的 seed yaml 都当夹具）。
 3. 文档：安装、S1 命令来源、与 MCP 方案的回退关系。
 
@@ -788,3 +849,13 @@ type Verdict = { acceptance_state: 'approved'|'rejected'|'unverified'
 - 宿主侧审批门默认**阻断**（上游默认 warn-only，这是刻意的差异，见附录 B）。
 - `min_generations` 取 3；停滞非终态；drift 不闸门（附录 B）。
 - 非目标：PM 访谈 / brownfield / publish / maintain / TUI / dashboard / 14 个宿主 adapter（§0）。
+
+### C.6 交付形态的自检（对应 §4.7）
+
+- 只交付 **host-level bundle**（一行 patch），**不新增 preset**；包名 `@local/ouroboros-dsh`、
+  Loader 行 id `ouroboros`、目录名 `ouroboros-dsh`。
+- 不要复用 `dsh-ouroboros`（上游 MCP bundle）或 `@local/dsh-ouroboros-preset`（旧 MCP 方案载体）这两个名字。
+- 插件做成**无状态**：不提供 `ctx.ouroboros` 服务，状态只写 `.ouroboros/`；将来若要改成
+  preset 形态，不必处理 realm 隔离。
+- 6 个工具的 `description` 必须自带触发条件与下一步提示（技能可能没被加载，见 §4.7 副作用）。
+- 安装后按 §4.7 第 2 条验证，并按 §6 P0 的六条做行为验收。
