@@ -30,6 +30,9 @@ LLM 走 `ctx.llm`，执行走 `ctx.subagents` / `ctx.workflowEngine`，状态落
   - 照搬区以 `# scaffold-begin` / `# scaffold-end` 标注。`@deepseek-ai/dsh-agent-preset` 的 config
     只有 `id` / `name` / `description` / `order` / `plugins`，**没有继承字段**，所以必须整段复制；
     DSH 升级时整段重抄。
+  - 照搬来源：已安装的 shipped 文件 `<dsh 安装目录>/node_modules/@deepseek-ai/dsh-web-app/presets/standard.patch.yml`
+    （本机 `/home/chaoran/.npm/_npx/1e7f6d9597241db0/node_modules/@deepseek-ai/dsh-web-app/presets/standard.patch.yml`），
+    取其中 `id: preset-standard` 行的 `config.plugins` 全量，忽略该文件其余行。
 - **不在 profile 层加 host 行**：本插件只存在于该 preset 的作用域内。
 - 与旧 MCP 方案**互斥**（两者都占 `preset-ouroboros` 行 id）：安装本 bundle 前先卸载
   `@local/dsh-ouroboros-preset`。
@@ -91,6 +94,7 @@ ouroboros-dsh/
 ├── cordis.patch.yml        # 一条 preset 声明（§2.1）
 ├── index.js                # export function apply(ctx, config)；export const inject = [...]
 ├── core/                   # 确定性内核：纯函数，无 IO，全部可单测
+│   ├── constants.js        # 全部阈值集中于此（§7）；其他模块只读它
 │   ├── seed.js             # 校验/解析/序列化 + semantic_ac_key
 │   ├── ambiguity.js        # 打分、四维下限、streak、0.21 钉子、milestone、就绪判定
 │   ├── gate.js             # approved|rejected|unverified + failure_reason 优先级
@@ -105,7 +109,8 @@ ouroboros-dsh/
 │   ├── SKILL.md            # 门面：触发、五步、硬门、references 指针、footer 规则
 │   └── references/{contract,interview,seed,evaluate,evolve}.md
 ├── locale/{zh,en}.json
-└── icon.svg
+├── icon.svg
+└── test/                   # node:test 单测：core/ 每个模块一个 <name>.test.js（§7 的数值逐条断言）
 ```
 
 ### 3.2 一次完整流程
