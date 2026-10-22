@@ -1,10 +1,12 @@
-# ouroboros-dsh 实现规格（v1）
+# ouroboros-dsh 实现规格（v1.1）
 
 > **效力**：本文是实现规格。实现、评审、验收一律以本文为准。
 > 历史调研、方案对比与被否决的备选方案见 [`research.md`](research.md)——那份文档**不含任何实现要求**，
 > 只在需要追溯"某个数字为什么是这样"时查阅。
 >
 > 上游语义参考：Q00/ouroboros v0.55.x（MIT）。所有数值的源码锚点见附录 A。
+>
+> **v1.1**：补演化换锁语义（§2.3 守卫只认完整性 / §4.4 锁字段 / §5 换锁五条件 / §6 批准的作用域）。
 
 ---
 
@@ -50,9 +52,12 @@ LLM 走 `ctx.llm`，执行走 `ctx.subagents`（Stage-1 命令另走 `ctx.sandbo
 
 - 监听 `agent/created`，用**该 agent 自己的 ctx** 注册守卫（`this.tools.guard(fn)`）。
   不得用插件自身 ctx——`guard` 在普通 ctx 上是全局的，会波及所有 preset。
-- 守卫逻辑（同步、只读一个小 JSON）：工具名属于写文件类（`write` / `edit` / `str_replace_editor`）
-  且目标落在会话工作区内时，读 `<cwd>/.ouroboros/seed.lock.json`；不存在则拒绝，理由固定为：
-  `先加载技能 ooo 并完成访谈、锁定 Seed；当前项目没有已锁定的 Seed。`
+- 守卫逻辑（同步、只读两个小文件）：工具名属于写文件类（`write` / `edit` / `str_replace_editor`）
+  且目标落在会话工作区内时，读 `<cwd>/.ouroboros/seed.lock.json`：
+  - 不存在 → 拒绝，理由固定为：`先加载技能 ooo 并完成访谈、锁定 Seed；当前项目没有已锁定的 Seed。`
+  - 存在但锁里的 `sha256` 与 `seeds/<seed_id>.json` 的正文哈希不一致 → 拒绝，理由固定为：
+    `锁与 Seed 不一致，先修复 .ouroboros/ 再写。`
+  - **守卫不读 `kind`**：不存在"演化豁免"分支。锁是权威指针，授权来源写在锁里供审计，不参与放行判断。
 - 守卫只能拒绝、不能授予；`bash` 内的写入不在守卫范围（已知缺口，见 §11）。
 
 ### 2.4 隔离：复用 DSH 沙箱（bwrap），不自建
@@ -211,7 +216,7 @@ ooo_evolve（可选）──► wonder/reflect → 新 Seed → run → evaluate
 
 ```
 .ouroboros/
-├── seed.lock.json                  # 存在即“已锁定”，守卫依据；不含正文，只有 seed_id + 哈希
+├── seed.lock.json                  # 当前权威规格指针（不含正文），字段见下
 ├── seeds/seed_<id>.json            # 不可变正文
 ├── ledger.jsonl
 ├── mechanical.toml                 # Stage1 命令来源（沿用上游格式）
@@ -220,6 +225,15 @@ ooo_evolve（可选）──► wonder/reflect → 新 Seed → run → evaluate
     ├── artifacts/
     ├── stage1.json  stage2.json  stage3.json
     └── verdict.json
+```
+
+**`seed.lock.json` 的唯一职责**：声明"当前哪份 Seed 是权威的、凭什么"。
+
+```jsonc
+{ "seed_id": "seed_…", "sha256": "<seeds/<id>.json 正文哈希>",
+  "kind": "human | evolution",           // 谁授权的
+  "approved_by": "explicit | evolution", // 怎么授权的
+  "lineage_id": "…|null", "generation": 0, "parent_seed_id": "…|null", "at": "ISO8601" }
 ```
 
 ---
@@ -241,6 +255,22 @@ ooo_evolve（可选）──► wonder/reflect → 新 Seed → run → evaluate
 **隔离**：只有两类执行需要沙箱——Stage-1 的命令（本插件自己 spawn）与 `ooo_run` 的执行子代理（继承会话策略）。
 两者都必须按 §2.4 解析策略，不得用裸 `ctx.subprocess` 绕过。Stage-2/3 是纯模型调用，不涉及进程与文件。
 
+**演化换锁（`ooo_evolve`）**：演化允许以**机器授权**替换锁，但必须同时满足五条；缺一即拒绝换锁、
+写入 `stop_reason` 并停住，不允许跳过它继续下一代。
+
+1. 同一 `lineage_id`，`generation` 恰好 +1；
+2. 候选 Seed 走与 `ooo_seed` **完全相同**的 `core/seed` 校验（不得放宽）；
+3. 上一代存在 `verdict.json`（没评测过的代不许换代）；
+4. `goal` 逐字不变；
+5. AC 集合只增不删（可新增、可改检验方式，不得删除任何一条）。
+
+第 4、5 条是硬护栏：它们是"靠缩小完成定义来通过"的作弊路径，与 §7 的 `reward_hacking_risk` 同类。
+要改 `goal` 或删 AC → 演化必须停下，交回 `ooo_seed` 走人工批准。
+
+**写者只有两个**：`seeds/` 与 `seed.lock.json` 只由 `ooo_seed`、`ooo_evolve` 写；执行与评审一律不许写（§8）。
+
+**可选交互**：`ooo_evolve({ interactive: true })` 每代停下等人批；默认按上述机器锁规则自主跑。
+
 **关于面试问答**：`ooo_interview` 自己调用 `ctx.userQuestions.ask()` 呈现选项卡片并等待答案；
 **不得**把问题当作文本返回给模型转述（子代理不能开人对人交互，访谈必须在主会话）。
 
@@ -257,6 +287,8 @@ ooo_evolve（可选）──► wonder/reflect → 新 Seed → run → evaluate
 2. **五步**：访谈 → Seed → 执行 → 评测 → 演化，每步一行，并写明"每一步都必须用对应工具，不得手工模拟"。
 3. **硬门清单**（不可跳过）：refine 确认、歧义账本可见、`ready ≠ 可以写 Seed`（先 closure 审计）、
    restate + 显式批准、`approved` 只能来自 Stage1 执行证据。
+   **显式批准的作用域是人写的 Seed**（`ooo_seed` 产出的 lineage 初代）；演化代的授权来自
+   lineage + 上一代 verdict，规则与硬护栏见 §5。
 4. **状态约定**：只读/只写 `.ouroboros/`；禁止写 `~/.ouroboros/`；账本只由工具写。
 5. **references 指针**：`contract`（阈值与裁决）、`interview`（打分与提问）、`seed`（九道门）、
    `evaluate`（三阶段与隔离）、`evolve`（收敛判据）。
