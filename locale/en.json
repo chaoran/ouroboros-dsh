@@ -1,0 +1,32 @@
+{
+  "skill_description": "Ouroboros spec-first workflow (ooo / interview / spec / Seed / evaluation / evolution). Load this skill before you start acting.",
+  "skill_when_to_use": "Use when the user says ooo… or /ooo…, asks for spec-before-implementation, wants an idea turned into a spec, or wants self-evaluation/evolution.",
+  "footer": "◆ {status} → next: {next}",
+  "guard_reason": "Load skill ooo first, finish the interview, and lock a Seed; this project has no locked Seed yet.",
+  "status": {
+    "interview": "interviewing",
+    "seed-locked": "Seed locked",
+    "awaiting-evaluation": "awaiting evaluation",
+    "approved": "approved",
+    "rejected": "rejected",
+    "unverified": "unverified",
+    "evolving": "evolving",
+    "converged": "converged"
+  },
+  "next": {
+    "ooo_interview": "continue the interview",
+    "ooo_seed": "generate and lock the Seed",
+    "ooo_run": "dispatch execution subagents",
+    "ooo_evaluate": "run the three-stage evaluation",
+    "ooo_evolve": "evolve the next generation",
+    "done": "done"
+  },
+  "tools": {
+    "ooo_interview": "One interview round: record the answer, score deterministically, ask the next question.",
+    "ooo_seed": "Nine gates + restate approval + validation + lock the Seed.",
+    "ooo_run": "Dispatch one execution subagent per AC and collect artifacts.",
+    "ooo_evaluate": "Stage1 mechanical / Stage2 semantic / Stage3 consensus + deterministic verdict.",
+    "ooo_evolve": "Evolution loop with the convergence criteria.",
+    "ooo_status": "Read-only status summary and footer."
+  }
+}

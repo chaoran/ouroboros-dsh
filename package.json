@@ -1,0 +1,43 @@
+{
+  "name": "@local/ouroboros-dsh",
+  "version": "0.1.0",
+  "description": "Spec-first workflow (interview -> Seed -> run -> evaluate -> evolve) for DeepSeek Harness, as one agent preset with no Python sidecar and no MCP bridge",
+  "icon": "./icon.svg",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./locale/*.json": "./locale/*.json",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "core/*.js",
+    "tools/*.js",
+    "skill/**/*.md",
+    "locale/*.json",
+    "icon.svg",
+    "cordis.patch.yml"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "engines": {
+    "node": ">=22.6"
+  },
+  "scripts": {
+    "test": "node --test 'test/**/*.test.js'",
+    "check": "node --check index.js"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "ouroboros",
+    "spec-first"
+  ],
+  "license": "MIT",
+  "private": true
+}

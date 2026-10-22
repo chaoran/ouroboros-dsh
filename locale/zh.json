@@ -1,0 +1,32 @@
+{
+  "skill_description": "Ouroboros 规格先行工作流（ooo / 访谈 / 规格 / Seed / 评测 / 演化）。做需求、写规格、执行或验收前，先加载本技能再动手。",
+  "skill_when_to_use": "用户说 ooo…、/ooo…、想先规格后实现、想把想法做成规格，或要做自评/演化时。",
+  "footer": "◆ {status} → next: {next}",
+  "guard_reason": "先加载技能 ooo 并完成访谈、锁定 Seed；当前项目没有已锁定的 Seed。",
+  "status": {
+    "interview": "访谈中",
+    "seed-locked": "Seed 已锁定",
+    "awaiting-evaluation": "等待评测",
+    "approved": "已通过",
+    "rejected": "未通过",
+    "unverified": "未验证",
+    "evolving": "演化中",
+    "converged": "已收敛"
+  },
+  "next": {
+    "ooo_interview": "继续访谈",
+    "ooo_seed": "生成并锁定 Seed",
+    "ooo_run": "派执行子代理",
+    "ooo_evaluate": "运行三阶段评测",
+    "ooo_evolve": "演化下一代",
+    "done": "结束"
+  },
+  "tools": {
+    "ooo_interview": "一轮访谈：记录答案、确定性打分、生成下一问并等待用户答复。",
+    "ooo_seed": "九道门 + restate 批准 + 校验 + 锁定 Seed。",
+    "ooo_run": "按 AC 派执行子代理，收集 artifacts。",
+    "ooo_evaluate": "Stage1 机械 / Stage2 语义 / Stage3 共识 + 确定性裁决。",
+    "ooo_evolve": "演化循环，按收敛判据停止。",
+    "ooo_status": "只读状态汇总与 footer。"
+  }
+}
