@@ -108,7 +108,7 @@ node --test 'test/**/*.test.js'
 > form above is the equivalent command and is what `npm test` uses. `node --test` with no arguments
 > also discovers `test/**/*.test.js`.
 
-Current result: **81 tests, 81 pass, 0 fail** (Node v24.11.1, no dependencies installed).
+Current result: **88 tests, 88 pass, 0 fail** (Node v24.11.1, no dependencies installed).
 
 ## Verification
 
@@ -131,6 +131,8 @@ Current result: **81 tests, 81 pass, 0 fail** (Node v24.11.1, no dependencies in
 | §5/§10 P2.1 worker prompt excludes `verify_command` / `output_assertion` | 做了 | `test/plugin.test.js` (`buildWorkerPrompt`) |
 | §2.4 `danger-full-access` reported as `enforcement: 'none'`; `workspace-write` records `full`/`partial`; `confine()` failure fails closed; `read-only` writes return a readable error | 做了 | `test/tools.test.js` |
 | §10 P1.5 `ooo_run` refuses without a locked Seed; a tampered Seed body fails the lock hash | 做了 | `test/tools.test.js` |
+| §10 P2.4 (unit half) — `exec.signal` aborts the Stage-1 spawn signal, calls `terminate()`, and waits for `waitForExit` | 做了 | `test/run-confined.test.js` |
+| §8/§12 — a failing `ooo_run` releases `.ouroboros/.lock`; `continuing:true` cold-resumes via `sendMessage` and never silently spawns | 做了 | `test/tools.test.js` |
 | §3.1 file tree, no runtime dependencies, no `~/.ouroboros` writes / MCP spawn (static half of §10 P0.7) | 做了 | `test/boundaries.test.js` |
 
 ### 待安装后验证 (needs a live profile/session)

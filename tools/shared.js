@@ -517,14 +517,35 @@ export async function runConfined(ctx, input) {
   }
 
   const controller = new AbortController();
-  const onAbort = () => controller.abort();
+  let handle;
+  let timedOut = false;
+  let timer;
+  let abortRequested = input.signal?.aborted === true;
+
+  const onAbort = () => {
+    abortRequested = true;
+    // The provider's signal contract starts its termination procedure; calling
+    // terminate() as well makes cancellation observable immediately (and is a
+    // no-op for a spec-conforming provider).
+    controller.abort();
+    handle?.terminate?.();
+  };
   if (input.signal !== undefined) {
     if (input.signal.aborted) controller.abort();
     else input.signal.addEventListener('abort', onAbort, { once: true });
   }
 
-  let handle;
+  const removeAbortListener = () => {
+    if (input.signal !== undefined) input.signal.removeEventListener('abort', onAbort);
+  };
+
+  let outcome;
   try {
+    if (abortRequested) {
+      throw new OuroborosError('已取消：Stage1 命令未启动', 'CANCELLED');
+    }
+    // The abort listener stays attached until the process settles: removing it
+    // right after spawn() would detach exec.signal from the child (§10 P2.4).
     handle = subprocess.spawn({
       argv,
       cwd: input.cwd,
@@ -536,26 +557,28 @@ export async function runConfined(ctx, input) {
       graceMs: 5_000,
       signal: controller.signal,
     });
-  } finally {
-    if (input.signal !== undefined) input.signal.removeEventListener('abort', onAbort);
-  }
 
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    handle.terminate();
-  }, input.timeoutMs);
+    timer = setTimeout(() => {
+      timedOut = true;
+      handle.terminate();
+    }, input.timeoutMs);
 
-  let outcome;
-  try {
     outcome = await handle.done;
   } finally {
-    clearTimeout(timer);
-    try {
-      await handle.waitForExit();
-    } catch {
-      // provider cannot observe the range any more; the outcome above stands
+    if (timer !== undefined) clearTimeout(timer);
+    removeAbortListener();
+    if (handle !== undefined) {
+      try {
+        // Wait for the whole managed range to quiesce, including after abort.
+        await handle.waitForExit();
+      } catch {
+        // provider cannot observe the range any more; the outcome above stands
+      }
     }
+  }
+
+  if (abortRequested && input.signal?.aborted === true) {
+    throw new OuroborosError('已取消：Stage1 命令已被终止', 'CANCELLED');
   }
 
   return {

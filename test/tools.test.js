@@ -249,7 +249,12 @@ test('ooo_evaluate：有 Stage1 执行证据 → approved；删掉 mechanical.to
       run_id: runId,
       seed_id: seedId,
       children: [
-        { ac_index: 0, semantic_ac_key: seedBody.acceptance_criteria[0].semantic_ac_key, stop_reason: 'completed' },
+        {
+          ac_index: 0,
+          semantic_ac_key: seedBody.acceptance_criteria[0].semantic_ac_key,
+          child_id: 'child-prior',
+          stop_reason: 'completed',
+        },
       ],
     }),
   );
@@ -417,5 +422,106 @@ test('read-only 会话：写状态的操作返回可读错误（§2.4 表）', a
     assert.match(status.footer, /^◆ .+ → next: .+$/);
   } finally {
     sandboxMode = 'danger-full-access';
+  }
+});
+
+test('P1-B：ooo_run 在 ledger 追加失败后释放 .lock（不再永久 BUSY）', async () => {
+  const lock = JSON.parse(readFileSync(join(root, '.ouroboros', 'seed.lock.json'), 'utf8'));
+  const ledgerPath = join(root, '.ouroboros', 'ledger.jsonl');
+  const writerLock = join(root, '.ouroboros', '.lock');
+  const originalLedger = readFileSync(ledgerPath, 'utf8');
+  writeFileSync(ledgerPath, `${originalLedger}this is not json\n`);
+  try {
+    await assert.rejects(
+      () => createRunTool(ctx).execute({ seed_id: lock.seed_id }, exec),
+      /ledger 解析失败/,
+    );
+    assert.equal(existsSync(writerLock), false, '失败后必须释放 O_EXCL 写锁');
+    await assert.rejects(
+      () => createRunTool(ctx).execute({ seed_id: lock.seed_id }, exec),
+      (error) => !/BUSY/.test(error.message) && /ledger 解析失败/.test(error.message),
+    );
+    assert.equal(existsSync(writerLock), false);
+  } finally {
+    writeFileSync(ledgerPath, originalLedger);
+  }
+});
+
+test('P1-C：continuing:true 在 child 不在 registry 时仍走 sendMessage 续跑（冷恢复）', async () => {
+  const lock = JSON.parse(readFileSync(join(root, '.ouroboros', 'seed.lock.json'), 'utf8'));
+  let spawnCalls = 0;
+  let sendTarget = null;
+  let published = false;
+  const events = [];
+  const child = {
+    async whenIdle() {
+      events.push({
+        type: 'assistant/message',
+        data: { message: { content: [{ type: 'text', text: 'continued output' }] } },
+      });
+    },
+    session: { snapshotEvents: () => events },
+  };
+  services.agents = {
+    get: (id) => (published && id === 'child-prior' ? child : undefined),
+  };
+  services.subagents = {
+    async sendMessage(sender, targetId, content, options) {
+      sendTarget = targetId;
+      assert.equal(sender, agent);
+      assert.equal(content[0].type, 'text');
+      assert.equal(typeof options.signal, 'object');
+      published = true;
+      return 'msg-continued';
+    },
+    async startActivation() {
+      spawnCalls += 1;
+      throw new Error('continuing:true must not spawn a new subagent');
+    },
+  };
+  try {
+    const result = await createRunTool(ctx).execute({ seed_id: lock.seed_id, continuing: true }, exec);
+    assert.equal(spawnCalls, 0, '不得静默新建子代理');
+    assert.equal(sendTarget, 'child-prior');
+    assert.equal(result.children.length, 1);
+    assert.equal(result.children[0].continued, true);
+    assert.equal(result.children[0].child_id, 'child-prior');
+    assert.equal(result.children[0].message_id, 'msg-continued');
+    assert.match(result.children[0].output, /continued output/);
+    assert.equal(existsSync(join(root, '.ouroboros', '.lock')), false);
+  } finally {
+    services.agents = undefined;
+    services.subagents = undefined;
+  }
+});
+
+test('P1-C：sendMessage 失败时报错而非静默新建子代理', async () => {
+  const lock = JSON.parse(readFileSync(join(root, '.ouroboros', 'seed.lock.json'), 'utf8'));
+  let spawnCalls = 0;
+  services.agents = {
+    get: () => ({ async whenIdle() {}, session: { snapshotEvents: () => [] } }),
+  };
+  services.subagents = {
+    async sendMessage() {
+      throw new Error('not a direct child');
+    },
+    async startActivation() {
+      spawnCalls += 1;
+      return { childId: 'new-child', result: Promise.resolve({ stopReason: 'completed', output: [] }) };
+    },
+  };
+  try {
+    await assert.rejects(
+      () => createRunTool(ctx).execute({ seed_id: lock.seed_id, continuing: true }, exec),
+      (error) =>
+        /续跑失败/.test(error.message) &&
+        /continuing:false/.test(error.message) &&
+        /not a direct child/.test(error.message),
+    );
+    assert.equal(spawnCalls, 0, '续跑失败不得退回新建');
+    assert.equal(existsSync(join(root, '.ouroboros', '.lock')), false);
+  } finally {
+    services.agents = undefined;
+    services.subagents = undefined;
   }
 });

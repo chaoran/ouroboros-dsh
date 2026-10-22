@@ -106,21 +106,40 @@ function rememberRun(paths, record) {
   writeJsonAtomic(indexPath, index);
 }
 
+/**
+ * Resolve a cold-resumed continuation child. `ctx.agents.get()` may be empty
+ * for a few ticks while the continuation manager materializes the child, so
+ * poll briefly rather than interpreting "not in the registry yet" as failure.
+ */
+async function resolveChildForContinuation(ctx, childId, attempts = 100) {
+  const agents = ctx?.get?.('agents') ?? ctx?.agents;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const child = agents?.get?.(childId);
+    if (child !== undefined) return child;
+    if (attempt < attempts - 1) await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  return undefined;
+}
+
+/** Wait for one continuation turn to settle. */
 async function waitForChildTurn(child, signal) {
-  if (child === undefined || typeof child.whenIdle !== 'function') return false;
+  if (child === undefined || typeof child.whenIdle !== 'function') return 'unobservable';
+  if (signal?.aborted === true) return 'aborted';
   let timer;
   let onAbort;
   const timeout = new Promise((resolve) => {
-    timer = setTimeout(() => resolve(false), CHILD_TIMEOUT_MS);
+    timer = setTimeout(() => resolve('timeout'), CHILD_TIMEOUT_MS);
   });
   const aborted = new Promise((resolve) => {
     if (signal === undefined) return;
-    onAbort = () => resolve(false);
+    onAbort = () => resolve('aborted');
     if (signal.aborted) onAbort();
     else signal.addEventListener('abort', onAbort, { once: true });
   });
   try {
-    const idle = child.whenIdle().then(() => true);
+    const idle = Promise.resolve()
+      .then(() => child.whenIdle())
+      .then(() => 'idle');
     return await Promise.race([idle, timeout, aborted]);
   } finally {
     clearTimeout(timer);
@@ -128,9 +147,9 @@ async function waitForChildTurn(child, signal) {
   }
 }
 
-function latestAssistantText(agent) {
+function latestAssistantText(agent, fromIndex = 0) {
   const events = agent?.session?.snapshotEvents?.() ?? [];
-  for (let index = events.length - 1; index >= 0; index -= 1) {
+  for (let index = events.length - 1; index >= fromIndex; index -= 1) {
     const event = events[index];
     if (event?.type !== 'assistant/message') continue;
     const content = event.data?.message?.content;
@@ -212,20 +231,40 @@ export function createRunTool(ctx) {
         Math.min(MAX_PARALLEL, Number.isInteger(args.max_parallel) ? args.max_parallel : DEFAULT_PARALLEL),
       );
       const release = acquireWriterLock(paths, 'run');
-      const runId = newId('run');
-      const runDir = join(paths.runs_dir, runId);
-      const artifactsDir = join(runDir, 'artifacts');
-      mkdirSync(artifactsDir, { recursive: true });
-      writeJsonAtomic(join(runDir, 'seed_snapshot.json'), seed);
-      appendLedger(paths, 'run.started', { run_id: runId, seed_id: seedId, max_parallel: maxParallel });
-
-      const previous = args.continuing === true ? priorRunWithChildren(paths, seedId) : undefined;
-      const previousByIndex = new Map(
-        (previous?.children ?? []).map((child) => [child.ac_index, child]),
-      );
-
-      const children = [];
       try {
+        const runId = newId('run');
+        const runDir = join(paths.runs_dir, runId);
+        const artifactsDir = join(runDir, 'artifacts');
+        mkdirSync(artifactsDir, { recursive: true });
+        writeJsonAtomic(join(runDir, 'seed_snapshot.json'), seed);
+        appendLedger(paths, 'run.started', { run_id: runId, seed_id: seedId, max_parallel: maxParallel });
+
+        const previous = args.continuing === true ? priorRunWithChildren(paths, seedId) : undefined;
+        const previousByIndex = new Map(
+          (previous?.children ?? []).map((child) => [child.ac_index, child]),
+        );
+        if (args.continuing === true) {
+          if (previous === undefined) {
+            throw new OuroborosError(
+              `没有可续跑的上一轮 run（seed ${seedId}）：continuing:true 只在已有 run 时有效。` +
+                '本轮没有新建任何子代理；请用 continuing:false 重新派发整轮。',
+              'NO_PREVIOUS_RUN',
+            );
+          }
+          const missing = seed.acceptance_criteria
+            .map((_, index) => index)
+            .filter((index) => previousByIndex.get(index)?.child_id === undefined);
+          if (missing.length > 0) {
+            throw new OuroborosError(
+              `continuing:true 需要上一轮每个 AC 都有 child_id；缺少 AC ${missing
+                .map((index) => index + 1)
+                .join(', ')}。本轮没有静默新建；请用 continuing:false 重新派发。`,
+              'NO_PREVIOUS_CHILD',
+            );
+          }
+        }
+
+        const children = [];
         const settled = await mapLimit(
           seed.acceptance_criteria,
           maxParallel,
@@ -233,30 +272,73 @@ export function createRunTool(ctx) {
             if (exec.signal?.aborted) throw new OuroborosError('已取消', 'CANCELLED');
             const label = `ooo AC ${index + 1}`;
             const prompt = buildWorkerPrompt(seed, ac, index);
-            const prior = previousByIndex.get(index);
 
-            if (args.continuing === true && prior?.child_id !== undefined) {
+            if (args.continuing === true) {
+              const prior = previousByIndex.get(index);
               const subagents = ctx?.get?.('subagents') ?? ctx?.subagents;
-              const child = ctx?.get?.('agents')?.get?.(prior.child_id);
-              if (subagents !== undefined && child !== undefined) {
-                const messageId = await subagents.sendMessage(
+              if (subagents === undefined || typeof subagents.sendMessage !== 'function') {
+                throw new OuroborosError(
+                  '本会话没有 ctx.subagents.sendMessage，无法续跑；本轮没有新建子代理。',
+                  'NO_SUBAGENTS',
+                );
+              }
+              const existingChild = ctx?.get?.('agents')?.get?.(prior.child_id);
+              const beforeCount = existingChild?.session?.snapshotEvents?.().length;
+              let messageId;
+              try {
+                // Do not require the child to be live: sendMessage cold-resumes
+                // a missing direct child (design §12; SubagentRuntime docs).
+                messageId = await subagents.sendMessage(
                   agent,
                   prior.child_id,
                   [{ type: 'text', text: prompt }],
                   { signal: exec.signal },
                 );
-                const finished = await waitForChildTurn(child, exec.signal);
-                const text = finished ? latestAssistantText(child) : '';
-                return {
-                  ac_index: index,
-                  semantic_ac_key: ac.semantic_ac_key,
-                  child_id: prior.child_id,
-                  message_id: messageId,
-                  continued: true,
-                  stop_reason: finished ? 'completed' : 'unfinished',
-                  output: text,
-                };
+              } catch (error) {
+                throw new OuroborosError(
+                  `续跑失败（AC ${index + 1}, child ${prior.child_id}）：${error?.message ?? error}。` +
+                    '本轮不会静默新建子代理；请用 continuing:false 重新派发整轮。',
+                  'CONTINUATION_FAILED',
+                );
               }
+              const child = await resolveChildForContinuation(ctx, prior.child_id);
+              if (child === undefined) {
+                throw new OuroborosError(
+                  `续跑消息已送达但无法观察到子代理 child ${prior.child_id}（AC ${index + 1}）；` +
+                    '本轮没有产物，也未自动新建。请用 continuing:false 重新派发。',
+                  'CONTINUATION_UNOBSERVABLE',
+                );
+              }
+              // Read only assistant messages emitted after this continuation
+              // message was admitted; otherwise a stale prior-turn summary
+              // could be reported as this run's output.
+              const outputOffset =
+                beforeCount ?? (child?.session?.snapshotEvents?.().length ?? 0);
+              const settledState = await waitForChildTurn(child, exec.signal);
+              if (settledState === 'aborted') {
+                throw new OuroborosError('已取消：续跑被中止', 'CANCELLED');
+              }
+              if (settledState === 'timeout') {
+                throw new OuroborosError(
+                  `续跑等待超时（AC ${index + 1}, child ${prior.child_id}）；本轮没有产物。`,
+                  'CONTINUATION_TIMEOUT',
+                );
+              }
+              if (settledState !== 'idle') {
+                throw new OuroborosError(
+                  `无法等待续跑子代理 child ${prior.child_id}（AC ${index + 1}）；本轮没有产物。`,
+                  'CONTINUATION_UNOBSERVABLE',
+                );
+              }
+              return {
+                ac_index: index,
+                semantic_ac_key: ac.semantic_ac_key,
+                child_id: prior.child_id,
+                message_id: messageId,
+                continued: true,
+                stop_reason: 'completed',
+                output: latestAssistantText(child, outputOffset),
+              };
             }
 
             let activation;
