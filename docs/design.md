@@ -52,6 +52,33 @@ LLM 走 `ctx.llm`，执行走 `ctx.subagents` / `ctx.workflowEngine`，状态落
   `先加载技能 ooo 并完成访谈、锁定 Seed；当前项目没有已锁定的 Seed。`
 - 守卫只能拒绝、不能授予；`bash` 内的写入不在守卫范围（已知缺口，见 §11）。
 
+### 2.4 隔离：复用 DSH 沙箱（bwrap），不自建
+
+DSH 在 Linux 上的进程沙箱后端就是 **bwrap**（`@deepseek-ai/dsh-sandbox-local` 的 runner 链是 `bwrap → Landlock`，
+bwrap 优先）。它给出的 profile 是：`--ro-bind / /`、`--dev /dev`、`--unshare-pid`、`--proc /proc`、
+`--die-with-parent`；`workspace-write` 再追加 `--tmpfs /tmp` 与 `--bind <workspaceRoot> <workspaceRoot>`。
+`enforcement`（`full` / `partial`）是**被报告的事实**而不是承诺；`danger-full-access` 时 provider
+**根本不被咨询**。
+
+所以本插件**不打包、不直接调用 bwrap**，只消费 `ctx.sandbox.confine(argv, policy, signal)`：
+拿到 `ConfinedArgv` 后 spawn 返回的 argv，并记录它的 `enforcement`。
+
+| 执行点 | 策略 | 理由 |
+|---|---|---|
+| Stage-1 验证命令（`ooo_evaluate`） | `workspace-write`，`workspaceRoot` = 项目根 | 测试/构建会写产物，不能 `read-only`；但不得写出项目 |
+| Stage-2 / Stage-3 评审 | **不执行任何进程**（`ctx.llm` 纯调用） | 没有工具、没有进程，就没有可写的对象；这是比"只读子代理"更强的隔离，也省 token |
+| `ooo_run` 的执行子代理 | `workspace-write`，`workspaceRoot` = 项目根 | 只允许改项目，杜绝写 `~/.ouroboros/` 或宿主其它位置 |
+| 插件自身写 `.ouroboros/` | 沿用当前会话策略 | `read-only` 会话写不了账本 → 必须返回可读错误，让用户切模式 |
+
+硬性要求：
+
+1. `confine()` 失败（`SANDBOX_UNAVAILABLE`、或 runner 拒绝 profile）→ **fail closed**，不得改走裸 `spawn`。
+2. `danger-full-access` 下 `ctx.sandbox` 不被咨询 → 结果必须标注
+   `sandbox: { mode: 'danger-full-access', enforcement: 'none' }`。
+3. `enforcement: 'partial'`（旧 Landlock ABI、Windows ACL rung）必须在 `stage1.json` 如实记录，
+   `verdict` 带 `sandbox` 字段；**不因此改变裁决**，但不许隐藏。
+4. 本插件**不**给模型暴露 `sandbox_permissions` / `justification`（那是 `bash` 工具的面）；升级只能由人做。
+
 ---
 
 ## 3. 架构
@@ -202,9 +229,12 @@ ooo_evolve（可选）──► wonder/reflect → 新 Seed → run → evaluate
 | `ooo_interview` | 一轮访谈：记答案 → 确定性打分 → 生成下一问 → 收用户答复 | `goal?`、`session_id?`、`answer?` | `{ question, options[], ambiguity, floors{...}, milestone, ready, ledger_lines, next_action }` | 追加账本；必要时 `seed.lock.json` 不动 | `ctx.llm`、`ctx.userQuestions`（**必须主会话**） |
 | `ooo_seed` | 九道门 → restate + 批准 → 校验 → 锁 Seed | `session_id`、`force?` | `{ seed_id, path, gates[], forced, quality_notes[] }` | 写 `seeds/`、`seed.lock.json` | `ctx.llm`、`ctx.userQuestions`、子代理（closure 审计，只读） |
 | `ooo_run` | 按 AC 派执行子代理，收集产物 | `seed_id`、`max_parallel?` | `{ run_id, acs[], artifacts[], children[] }` | 写 `runs/<id>/` | `ctx.subagents` / `ctx.workflowEngine` |
-| `ooo_evaluate` | 三阶段评测 + 确定性裁决 | `seed_id`、`run_id?` | `{ acceptance_state, failure_reason, stage1, stage2?, stage3? }` | 写 `runs/<id>/{stage1,stage2,stage3,verdict}.json` | `ctx.subprocess`、子代理、`ctx.llm` |
+| `ooo_evaluate` | 三阶段评测 + 确定性裁决 | `seed_id`、`run_id?` | `{ acceptance_state, failure_reason, stage1, stage2?, stage3?, sandbox }` | 写 `runs/<id>/{stage1,stage2,stage3,verdict}.json` | `ctx.sandbox` + `ctx.subprocess`（Stage1）、`ctx.llm`（Stage2/3 纯调用，**不派子代理**） |
 | `ooo_evolve` | 一代或到收敛的演化循环 | `lineage_id?`、`seed_id`、`max_generations?`（默认 8，上限 30） | `{ lineage_id, generations, converged, similarity, stop_reason }` | 写 `lineage/<id>.jsonl`、`runs/` | `ctx.workflowEngine`（固定脚本）、`ctx.llm`、子代理 |
 | `ooo_status` | 只读汇总：阶段/歧义/代数/最近裁决 | `cwd?` | `{ phase, ambiguity, locked, generations, last_verdict, footer }` | 无 | — |
+
+**隔离**：只有两类执行需要沙箱——Stage-1 的命令（本插件自己 spawn）与 `ooo_run` 的执行子代理（继承会话策略）。
+两者都必须按 §2.4 解析策略，不得用裸 `ctx.subprocess` 绕过。Stage-2/3 是纯模型调用，不涉及进程与文件。
 
 **关于面试问答**：`ooo_interview` 自己调用 `ctx.userQuestions.ask()` 呈现选项卡片并等待答案；
 **不得**把问题当作文本返回给模型转述（子代理不能开人对人交互，访谈必须在主会话）。
@@ -255,6 +285,10 @@ ooo_evolve（可选）──► wonder/reflect → 新 Seed → run → evaluate
 | 代数 | `min_generations=3`、`max_generations=30` | `ooo_evolve` 默认 8，上限 30 |
 | 回归 | 历史上通过过、当前不是权威通过 → 回归 | per-AC 布尔，无阈值 |
 
+**Stage-1 的沙箱事实必须随证据落盘**：`stage1.json` 与 `verdict.sandbox` 记录
+`{ mode, enforcement }`；`enforcement === 'none'` 只可能来自 `danger-full-access`，必须出现在 `ooo_evaluate`
+的返回里（模型与用户都能看到"这次验收是在无约束环境下跑的"）。
+
 **必须优先写的六个模块**（先单测全绿再接工具）：`seed`、`ambiguity`、`gate`、`stage1`、`converge`+`focus`、`ledger`。
 
 ---
@@ -278,6 +312,8 @@ ooo_evolve（可选）──► wonder/reflect → 新 Seed → run → evaluate
 # 3) 新建会话，模式选「Ouroboros」
 ```
 
+- **前置条件**：会话权限至少 `workspace-write`。`read-only` 会话下访谈无法写账本（工具会明确报错），
+  `danger-full-access` 下所有执行都不受沙箱约束（结果会标注 `enforcement: 'none'`）。
 - **验证**：`plugin_manager list_plugins` 出现 `preset-ouroboros`；
   `cordis_inspect_query`（`Config.listConfigs`，`name: '@local/ouroboros-dsh'`）能取到本插件的 schema；
   其他 preset 的新会话里**看不到** `ooo` 技能、也没有 `ooo_*` 工具。
@@ -343,7 +379,11 @@ ooo_evolve（可选）──► wonder/reflect → 新 Seed → run → evaluate
 | `ctx.llm` 无结构化输出（只有 temperature/maxTokens/stop） | 评审结果要手写解析 | 要求纯 JSON 块；解析失败重试 2 次；仍失败 → `unverified` / 可读错误，**不猜** |
 | 工具注册不在会话维度 | 同一 preset 内首次使用后工具常驻，已开会话收到"工具新增"消息并付一次 KV cache 失效 | 接受；不为此加复杂度 |
 | `guard` 在普通 ctx 上是全局 | 必须按 agent 注册 | 只在 `agent/created` 里用 `this.tools.guard` |
-| `bash` 内的写入不受守卫约束 | 守卫不是沙箱 | 已知缺口；如需更强约束靠会话权限模式，不在本插件范围 |
+| 守卫管“能不能写”，不管“写到哪” | 守卫拦不住 `bash` 内的写入 | 边界交给沙箱（§2.4）：`read-only`/`workspace-write` 下 bwrap 会拦；`danger-full-access` 下两者都不生效，结果必须标注 |
+| 沙箱只约束**文件效果** | 网络不隔离；共享宿主内核与文件系统（不是容器） | 需要网络隔离只能改 `runnerCommand`（跳过探测、运维背书）或等上游；本插件不承诺 |
+| 后端可能回退 | 无 bwrap 时走 Landlock，`enforcement` 可能是 `partial` | 如实记录在 `stage1.json` 与 `verdict.sandbox`，不隐藏、不因此改判 |
+| 子代理无法按次指定沙箱模式 | 执行子代理只能继承会话策略（`DelegatedPolicyOverrides` 只捕获父会话的显式 override，审批固定 `never`） | 不用子代理承担需要不同权限的角色：评审改用 `ctx.llm` 纯调用 |
+| DSH 的 bwrap profile 不含 `--unshare-net` | 子代理与 Stage-1 都能联网 | 记为已知边界；要收紧需上游新增网络字段或运维自定义 runner |
 | preset 必须复制 `standard` 插件清单 | DSH 升级要重抄 scaffold | `scaffold-begin/end` 标注；升级列为维护动作 |
 | preset 是 eager 装载 | 不用它也会加载插件代码 | 代价是进程内 JS，无子进程；不接受为此改成 host 常驻 |
 | Stage1 在沙箱内可能跑不动（网络/安装类命令） | 得到 `unverified` | 这是正确行为；不为通过而放宽证据要求 |
@@ -366,6 +406,10 @@ ooo_evolve（可选）──► wonder/reflect → 新 Seed → run → evaluate
 | 收敛顺序 | `evolution/convergence.py:70-133, 394-410` |
 | 相似度 / focus / rewind | `core/lineage.py:389-407`、`evolution/focus.py:193-282`、`loop.py:2027-2098` |
 | 账本表结构与重放 | `persistence/schema.py:42-227`、`event_store.py:1684-1721` |
+| 沙箱后端与 bwrap profile | `@deepseek-ai/dsh-sandbox-local/README.md`（runner 链 `bwrap → Landlock`、mount 组成）、`lib/index.js:24-36` |
+| `confine` 契约 / enforcement | `ctx.sandbox.confine`（Service 目录）、`dsh-sandbox/README.md:134`（无可用后端时 fail closed） |
+| 模式与文件效果、升级流程 | `@deepseek-ai/dsh-bash-sandbox/README.md`（`read-only`/`workspace-write`/`danger-full-access`） |
+| 委派子代理的策略固定（无按次指定） | `@deepseek-ai/dsh-subagent` `child-agent.d.ts:92-128`、`SubagentStartRequest`（无 sandbox 字段） |
 
 ## 附录 B：数值决策（文档与代码冲突时取哪边）
 
@@ -389,3 +433,5 @@ ooo_evolve（可选）──► wonder/reflect → 新 Seed → run → evaluate
 - **ledger**：`.ouroboros/ledger.jsonl`，append-only，只由代码写。
 - **lineage**：演化血缘；每代一条记录，rewind 只截断投影不删事件。
 - **block gate**：相似度达标后仍必须全部通过的收敛闸门集合（§7）。
+- **enforcement**：沙箱后端对某次执行实际覆盖的完整性，`full` / `partial`；不是配置，是执行结果事实。
+- **confine**：把 argv 包成受限 argv 的动作；失败必须 fail closed，禁止静默降级为裸 spawn。
