@@ -390,6 +390,28 @@ ooo_evolve（可选）──► wonder/reflect → 新 Seed → run → evaluate
 
 ---
 
+## 12. 与既有 `code-task-loop` 的边界（不要重复造）
+
+同机另一个实现循环 `code-task-loop`（`claude-mode` preset 里的 `implement` / `review` 两个工具，730 行）
+与本项目**并存且互不可见**（不同 preset）。它的验收权威是**评审判断**（P0/P1/P2 分级），
+本项目的验收权威是**执行证据**（Stage-1）。两者不互相替代，但本项目要从它那里取两点：
+
+1. **Stage-2 的评审口径**：在保留 §7 数值字段（`score` / `ac_compliance` / `reward_hacking_risk` 等）的前提下，
+   要求评审输出**同构的 P0/P1/P2 条目**（P0 = 可稳定复现且导致卡死/数据损坏/安全边界失效；
+   P1 = 与 AC 不一致且不合理、或缺失方案要求的测试；P2 = 低危/可维护性）。
+   数值决定是否扣留，条目决定**给人看什么、给下一轮改什么**。
+2. **`ooo_run` 的支持续跑**：默认每条 AC 起一个全新子代理；当上一轮评测只留下少数未通过的 AC 时，
+   允许 `ooo_run({ continuing: true })` 用 `sendMessage` 续跑**同一个**子代理（DSH 的 continuable child），
+   避免整轮重做。与 `code-task-loop` 的"implementer 跨轮复用"同义。
+
+**不要在本项目里重造**：P0/P1 分级表、角色 persona 注入方式、委派深度自查、`implement`/`review` 两个工具。
+那套东西已经在 `claude-mode` preset 里跑着；本项目只借用口径与续跑语义。
+
+> 退役判据（供决策，不是本规格的要求）：当本项目能同时对下列三条给出"是"时，`code-task-loop` 才可以退役——
+> ① 无测试命令的项目也能给出有意义的通过（今天会是 `unverified`）；
+> ② 跨轮修复记忆已具备（§12 第 2 条落地）；
+> ③ 平均访谈轮数 ≤3 且总 token 不高于 `code-task-loop` 一遍实现+评审的实测值。
+
 ## 附录 A：上游锚点（改数值前先读）
 
 | 内容 | 位置 |
